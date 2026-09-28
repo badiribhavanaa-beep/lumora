@@ -1,0 +1,7 @@
+{
+  "name": "LUMORA — Modern Lifestyle Store",
+  "description": "Simple things. Better living. A minimal, curated lifestyle brand for thoughtful fashion, home, accessories, and tech essentials.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
