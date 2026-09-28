@@ -23,6 +23,7 @@ import { CartDrawer } from './components/CartDrawer';
 import { QuickViewModal } from './components/QuickViewModal';
 import { SearchModal } from './components/SearchModal';
 import { ToastContainer } from './components/ToastContainer';
+import { Chatbot } from './components/Chatbot';
 
 const MainContent: React.FC = () => {
   const { currentView } = useStore();
@@ -63,6 +64,7 @@ const MainContent: React.FC = () => {
       <QuickViewModal />
       <SearchModal />
       <ToastContainer />
+      <Chatbot />
     </div>
   );
 };
