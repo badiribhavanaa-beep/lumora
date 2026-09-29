@@ -1,16 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useStore } from '../context/StoreContext';
+import { getLocalConciergeResponse } from '../utils/conciergeFallback';
 import { 
   MessageSquare, 
   X, 
   Send, 
   Sparkles, 
-  Minimize2, 
-  Maximize2, 
   RotateCcw,
-  ShoppingBag,
-  ExternalLink,
-  ChevronDown
+  Settings,
+  HelpCircle,
+  CheckCircle,
+  AlertCircle
 } from 'lucide-react';
 
 interface ChatMessage {
@@ -18,15 +18,25 @@ interface ChatMessage {
   sender: 'user' | 'bot';
   text: string;
   timestamp: string;
+  source?: 'n8n' | 'fallback';
 }
 
-const N8N_WEBHOOK_URL = 'https://bhavanaaa.app.n8n.cloud/webhook/d8143a73-af69-4e99-877f-cc04b7ed8777/chat';
+const DEFAULT_N8N_URL = 'https://bhavanaaa.app.n8n.cloud/webhook/d8143a73-af69-4e99-877f-cc04b7ed8777/chat';
 
 export const Chatbot: React.FC = () => {
-  const { viewProduct, setCurrentView } = useStore();
+  const { viewProduct, setCurrentView, showToast } = useStore();
   const [isOpen, setIsOpen] = useState(false);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [showConfig, setShowConfig] = useState(false);
+  
+  const [webhookUrl, setWebhookUrl] = useState(() => {
+    return localStorage.getItem('lumora_n8n_url') || DEFAULT_N8N_URL;
+  });
+  const [tempWebhookUrl, setTempWebhookUrl] = useState(webhookUrl);
+
+  const [n8nStatus, setN8nStatus] = useState<'connected' | 'not-active' | 'offline'>('not-active');
+
   const [sessionId] = useState(() => {
     const existing = localStorage.getItem('lumora_chat_session');
     if (existing) return existing;
@@ -39,8 +49,9 @@ export const Chatbot: React.FC = () => {
     {
       id: 'welcome-1',
       sender: 'bot',
-      text: 'Welcome to LUMORA. I am your personal shopping concierge. How may I assist your space, wardrobe, or order today?',
+      text: 'Welcome to LUMORA. I am your personal studio concierge. Ask me for recommendations, styling guidance, discounts, or order inquiries.',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      source: 'fallback',
     }
   ]);
 
@@ -70,8 +81,15 @@ export const Chatbot: React.FC = () => {
     setInputMessage('');
     setIsLoading(true);
 
+    let finalReply = '';
+    let responseSource: 'n8n' | 'fallback' = 'fallback';
+
+    // Step 1: Attempt to contact the user's trained n8n webhook
     try {
-      const response = await fetch(N8N_WEBHOOK_URL, {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 7000);
+
+      const response = await fetch(webhookUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -87,48 +105,53 @@ export const Chatbot: React.FC = () => {
             url: window.location.href,
           }
         }),
+        signal: controller.signal,
       });
 
-      let replyText = '';
+      clearTimeout(timeoutId);
 
       if (response.ok) {
+        setN8nStatus('connected');
+        responseSource = 'n8n';
         const contentType = response.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
           const data = await response.json();
-          // Check common n8n AI agent response shapes
-          replyText = 
+          finalReply = 
             data.output || 
             data.text || 
             data.response || 
             data.message || 
             (typeof data === 'string' ? data : JSON.stringify(data));
         } else {
-          replyText = await response.text();
+          finalReply = await response.text();
         }
       } else {
-        replyText = "I'm having a brief connection issue with our studio server. Please feel free to ask again or reach our team at concierge@lumora.studio.";
+        // n8n returned 404 or inactive
+        setN8nStatus('not-active');
+        finalReply = getLocalConciergeResponse(messageToSend);
       }
-
-      const botMessage: ChatMessage = {
-        id: 'bot_' + Date.now(),
-        sender: 'bot',
-        text: replyText || 'Thank you for your inquiry. How else may I assist you?',
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      };
-
-      setMessages(prev => [...prev, botMessage]);
-    } catch (error) {
-      console.error('n8n Chatbot Error:', error);
-      const errorMessage: ChatMessage = {
-        id: 'err_' + Date.now(),
-        sender: 'bot',
-        text: "I was unable to connect to the concierge service just now. Please try again in a moment, or browse our curated catalog.",
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      };
-      setMessages(prev => [...prev, errorMessage]);
+    } catch (err: any) {
+      // Network failure, CORS, or inactive n8n workflow
+      console.warn('n8n connection unfulfilled, activating Lumora intelligence fallback:', err);
+      setN8nStatus('not-active');
+      finalReply = getLocalConciergeResponse(messageToSend);
     } finally {
       setIsLoading(false);
     }
+
+    if (!finalReply) {
+      finalReply = getLocalConciergeResponse(messageToSend);
+    }
+
+    const botMessage: ChatMessage = {
+      id: 'bot_' + Date.now(),
+      sender: 'bot',
+      text: finalReply,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      source: responseSource,
+    };
+
+    setMessages(prev => [...prev, botMessage]);
   };
 
   const handleClearHistory = () => {
@@ -136,15 +159,27 @@ export const Chatbot: React.FC = () => {
       {
         id: 'welcome-reset',
         sender: 'bot',
-        text: 'Conversation refreshed. What can I curate or answer for you today?',
+        text: 'Conversation refreshed. How may I assist your space, desk, or wardrobe today?',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        source: 'fallback',
       }
     ]);
+  };
+
+  const saveWebhookUrl = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanUrl = tempWebhookUrl.trim();
+    if (!cleanUrl) return;
+    setWebhookUrl(cleanUrl);
+    localStorage.setItem('lumora_n8n_url', cleanUrl);
+    setShowConfig(false);
+    showToast('n8n Webhook URL updated.');
   };
 
   const quickPrompts = [
     'Recommend essentials for a quiet desk',
     'What promo codes or discounts are available?',
+    'Tell me about the Kanso Travertine Lamp',
     'What is your shipping and return policy?',
   ];
 
@@ -154,7 +189,7 @@ export const Chatbot: React.FC = () => {
       {!isOpen && (
         <button
           onClick={() => setIsOpen(true)}
-          className="fixed bottom-6 right-6 z-40 p-4 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 rounded-full shadow-2xl hover:scale-105 transition-all duration-300 flex items-center gap-2 group cursor-pointer border border-stone-700/30"
+          className="fixed bottom-6 right-6 z-40 p-4 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 rounded-full shadow-2xl hover:scale-105 transition-all duration-300 flex items-center gap-2.5 group cursor-pointer border border-stone-700/30"
           aria-label="Open Lumora AI Concierge"
         >
           <div className="relative">
@@ -170,7 +205,7 @@ export const Chatbot: React.FC = () => {
 
       {/* Chat Window */}
       {isOpen && (
-        <div className="fixed bottom-4 sm:bottom-6 right-4 sm:right-6 z-50 w-[calc(100vw-2rem)] sm:w-[410px] h-[580px] max-h-[85vh] bg-white dark:bg-stone-900 border border-stone-200/90 dark:border-stone-800 rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-5 duration-300">
+        <div className="fixed bottom-4 sm:bottom-6 right-4 sm:right-6 z-50 w-[calc(100vw-2rem)] sm:w-[420px] h-[600px] max-h-[85vh] bg-white dark:bg-stone-900 border border-stone-200/90 dark:border-stone-800 rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-5 duration-300">
           
           {/* Header */}
           <div className="p-4 px-5 bg-[#FAF9F6] dark:bg-stone-950 border-b border-stone-200 dark:border-stone-800 flex items-center justify-between">
@@ -179,13 +214,17 @@ export const Chatbot: React.FC = () => {
                 L
               </div>
               <div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-2">
                   <h3 className="text-xs font-semibold text-stone-900 dark:text-stone-100">
                     LUMORA Concierge
                   </h3>
-                  <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded-sm">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    n8n AI
+                  <span className={`inline-flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.5 rounded-sm ${
+                    n8nStatus === 'connected'
+                      ? 'text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60'
+                      : 'text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/60'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${n8nStatus === 'connected' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                    <span>{n8nStatus === 'connected' ? 'n8n Live' : 'Active'}</span>
                   </span>
                 </div>
                 <p className="text-[10px] text-stone-400 font-light">
@@ -195,6 +234,15 @@ export const Chatbot: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-1">
+              <button
+                onClick={() => setShowConfig(!showConfig)}
+                className={`p-1.5 rounded-lg transition-colors ${
+                  showConfig ? 'bg-stone-200 dark:bg-stone-800 text-stone-900 dark:text-white' : 'text-stone-400 hover:text-stone-700 dark:hover:text-stone-200'
+                }`}
+                title="Webhook settings & Status"
+              >
+                <Settings className="w-3.5 h-3.5" />
+              </button>
               <button
                 onClick={handleClearHistory}
                 className="p-1.5 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-lg transition-colors"
@@ -212,6 +260,45 @@ export const Chatbot: React.FC = () => {
             </div>
           </div>
 
+          {/* Webhook Configuration & Troubleshooting Banner */}
+          {showConfig && (
+            <div className="p-4 bg-stone-100 dark:bg-stone-950 border-b border-stone-200 dark:border-stone-800 text-xs space-y-3 animate-in fade-in">
+              <div className="flex items-start justify-between">
+                <div className="space-y-1">
+                  <span className="font-semibold text-stone-900 dark:text-stone-100 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                    <span>n8n Webhook Configuration</span>
+                  </span>
+                  <p className="text-[11px] text-stone-500 leading-relaxed">
+                    Make sure your n8n workflow has the <strong>Active toggle switched ON</strong> in the top-right corner of the n8n canvas so production calls respond with 200 OK.
+                  </p>
+                </div>
+              </div>
+
+              <form onSubmit={saveWebhookUrl} className="space-y-2">
+                <input
+                  type="url"
+                  value={tempWebhookUrl}
+                  onChange={(e) => setTempWebhookUrl(e.target.value)}
+                  placeholder="https://...app.n8n.cloud/webhook/.../chat"
+                  className="w-full px-3 py-1.5 bg-white dark:bg-stone-900 border border-stone-300 dark:border-stone-700 rounded-lg text-xs font-mono"
+                  required
+                />
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-stone-400">
+                    Fallback: Built-in LUMORA intelligence is active
+                  </span>
+                  <button
+                    type="submit"
+                    className="px-3 py-1 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-semibold rounded-lg"
+                  >
+                    Save URL
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
           {/* Messages Scroll Area */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3.5 bg-stone-50/50 dark:bg-stone-900/40">
             {messages.map(msg => (
@@ -228,9 +315,12 @@ export const Chatbot: React.FC = () => {
                 >
                   {msg.text}
                 </div>
-                <span className="text-[9px] text-stone-400 mt-1 px-1 font-mono">
-                  {msg.timestamp}
-                </span>
+                <div className="flex items-center gap-1.5 mt-1 px-1 text-[9px] text-stone-400 font-mono">
+                  <span>{msg.timestamp}</span>
+                  {msg.sender === 'bot' && (
+                    <span>· {msg.source === 'n8n' ? 'n8n AI' : 'Concierge'}</span>
+                  )}
+                </div>
               </div>
             ))}
 
@@ -247,7 +337,7 @@ export const Chatbot: React.FC = () => {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Quick Prompts (visible if conversation is short) */}
+          {/* Quick Prompts */}
           {messages.length <= 2 && (
             <div className="px-4 py-2 bg-stone-50 dark:bg-stone-900/80 border-t border-stone-100 dark:border-stone-800 flex flex-col gap-1.5">
               <span className="text-[10px] uppercase tracking-wider text-stone-400 font-semibold">
@@ -258,7 +348,7 @@ export const Chatbot: React.FC = () => {
                   <button
                     key={idx}
                     onClick={() => handleSendMessage(undefined, prompt)}
-                    className="text-left text-[11px] px-2.5 py-1 bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 border border-stone-200 dark:border-stone-700 rounded-lg text-stone-700 dark:text-stone-300 transition-colors"
+                    className="text-left text-[11px] px-2.5 py-1 bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 border border-stone-200 dark:border-stone-700 rounded-lg text-stone-700 dark:text-stone-300 transition-colors cursor-pointer"
                   >
                     {prompt}
                   </button>
